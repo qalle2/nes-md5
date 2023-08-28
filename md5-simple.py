@@ -153,4 +153,8 @@ assert md5(b"ximaz").hex()   == "61529519452809720693702583126814"
 assert md5(b"passwd").hex()  == "76a2173be6393254e72ffa4d6df1030a"
 assert md5(b"ABCDEFG").hex() == "bb747b3df3130fe1ca4afa93fb7d97c9"
 
+# if no chunks are hashed:
+# state: 0xce8a4602 0xdf9b5712 0x3175b9fc 0x2064a8ec
+# hexadecimal hash: 02468ace 12579bdf fcb97531 eca86420
+
 main()

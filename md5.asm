@@ -1,22 +1,9 @@
 ; Qalle's MD5 Hasher (NES, ASM6)
 
-; Simplified MD5 algorithm (only for short messages):
-; 1. Pad message:
-;    1. Take 64 * byte 0x00.
-;    2. Replace beginning with original message.
-;    3. Replace following byte with 0x80.
-;    4. Replace byte at index 56 with original length in *bits*.
-; 2. Treat message as 16 * 32-bit ints.
-; 3. Hash message to 4 * 32-bit ints (16 bytes).
-; 4. Add each 32-bit int of the initial (constant) 16-byte state to the
-;    corresponding 32-bit int in the hash.
-
-; md5("") = d41d 8cd9 8f00 b204 e980 0998 ecf8 427e
-
 ; --- Constants ---------------------------------------------------------------
 
 ; Notes:
-; - dword0, dword1, dword2, dword3: 32-bit unsigned integers
+; - "dword" = 32-bit little endian integer
 ; - run_main_loop: $00-$7f = no, $80-$ff = yes
 ; - mode:
 ;     0 = editing
@@ -26,11 +13,15 @@
 ; RAM
 msg_bytes       equ $00    ; message as bytes (64 bytes)
 msg_digits      equ $40    ; message as hexadecimal digits (16 bytes)
-hash            equ $50    ; MD5 hash (16 bytes)
-dword0          equ $60    ; see above (4 bytes)
-dword1          equ $64    ; see above (4 bytes)
-dword2          equ $68    ; see above (4 bytes)
-dword3          equ $6c    ; see above (4 bytes)
+state           equ $50    ; MD5 state/hash (16 bytes, split in 4 dwords)
+state0          equ $50
+state1          equ $54
+state2          equ $58
+state3          equ $5c
+tdw0            equ $60    ; temporary dword (4 bytes)
+tdw1            equ $64    ; temporary dword (4 bytes)
+tdw2            equ $68    ; temporary dword (4 bytes)
+tdw3            equ $6c    ; temporary dword (4 bytes)
 ppu_buffer      equ $70    ; copied to PPU on next VBlank (24 bytes)
 msg_len_digits  equ $f0    ; message length in digits (0-14)
 msg_len_bytes   equ $f1    ; message length in bytes (0-7)
@@ -446,13 +437,8 @@ msg_digit2buf   ; copy message digit to PPU buffer
 
 ; --- Main loop - mode 1 ------------------------------------------------------
 
-main_mode1      jsr prepare_msg
-
-                ; TODO: treating the message as 16 * 32-bit ints,
-                ; hash it to 4 * 32-bit ints (16 bytes).
-
-                ; TODO: finally, add initial state (constant) to hash
-                ; 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476
+main_mode1      jsr prepare_msg         ; convert to bytes and pad
+                jsr hash_msg
 
                 ; update 1st line of hash via PPU buffer
                 lda #$62                ; PPU address low
@@ -460,7 +446,6 @@ main_mode1      jsr prepare_msg
                 jsr upd_hash_line
 
                 inc mode                ; to mode 2
-
                 rts
 
 prepare_msg     ; convert message from hexadecimal digits to bytes and pad it
@@ -506,6 +491,138 @@ prepare_msg     ; convert message from hexadecimal digits to bytes and pad it
 
                 rts
 
+; these macros are only used under hash_msg;
+; cycle counts assume zero page;
+;   2 cycles: LDA/ADC imm, ASL/LSR/ROL/ROR A, CLC
+;   3 cycles: LDA/STA/ADC zp, PHA
+;   4 cycles: PLA
+;   5 cycles: ASL/LSR/ROL/ROR zp
+;   6 cycles: JSR abs, RTS
+;
+macro copy _1, _2
+                ; copy _1 to _2 via A (6 cycles)
+                lda _1
+                sta _2
+endm
+macro addm _1, _2
+                ; add _2 to _1 via A (9 cycles)
+                lda _2
+                adc _1
+                sta _1
+endm
+macro push _1
+                ; push _1 via A (6 cycles)
+                lda _1
+                pha
+endm
+macro pull _1
+                ; pull _1 via A (7 cycles)
+                pla
+                sta _1
+endm
+macro swap _1, _2
+                ; swap _1 and _2 (19 cycles)
+                push _2
+                copy _1, _2
+                pull _1
+endm
+macro cidw _1, _2
+                ; copy immediate dword _2 to memory dword _1 via A (20 cycles)
+                copy #( _2        & $ff), _1+0
+                copy #((_2 >>  8) & $ff), _1+1
+                copy #((_2 >> 16) & $ff), _1+2
+                copy #((_2 >> 24) & $ff), _1+3
+endm
+
+hash_msg        ; set initial state
+                ldx #0
+-               lda init_state,x
+                sta state,x
+                inx
+                cpx #16
+                bne -
+
+                ; TODO: hash the chunk
+
+                ; add initial state
+                ldx #0
+-               clc
+                lda init_state,x
+                adc state,x
+                sta state,x
+                inx
+                lda init_state,x
+                adc state,x
+                sta state,x
+                inx
+                lda init_state,x
+                adc state,x
+                sta state,x
+                inx
+                lda init_state,x
+                adc state,x
+                sta state,x
+                inx
+                cpx #16
+                bne -
+
+                rts
+
+; cycle counts include JSR and RTS (+12 cycles)
+
+add_tdw1_tdw0   ; add tdw1 to tdw0 (50 cycles)
+                clc
+                addm tdw0+0, tdw1+0
+                addm tdw0+1, tdw1+1
+                addm tdw0+2, tdw1+2
+                addm tdw0+3, tdw1+3
+                rts
+
+rol1_tdw0       ; ROL tdw0 (37 cycles)
+                lda tdw0+3
+                asl a
+                rol tdw0+0
+                rol tdw0+1
+                rol tdw0+2
+                rol tdw0+3
+                rts
+
+ror1_tdw0       ; ROR tdw0 (37 cycles)
+                lda tdw0+0
+                lsr a
+                ror tdw0+3
+                ror tdw0+2
+                ror tdw0+1
+                ror tdw0+0
+                rts
+
+rol8_tdw0       ; ROL*8 tdw0 (43 cycles)
+                push tdw0+3
+                copy tdw0+2, tdw0+3
+                copy tdw0+1, tdw0+2
+                copy tdw0+0, tdw0+1
+                pull tdw0+0
+                rts
+
+ror8_tdw0       ; ROR*8 tdw0 (43 cycles)
+                push tdw0+0
+                copy tdw0+1, tdw0+0
+                copy tdw0+2, tdw0+1
+                copy tdw0+3, tdw0+2
+                pull tdw0+3
+                rts
+
+rol16_tdw0      ; ROL*16 tdw0 (50 cycles)
+                swap tdw0+0, tdw0+2
+                swap tdw0+1, tdw0+3
+                rts
+
+init_state      ; initial state of MD5 algorithm
+                hex 01 23 45 67
+                hex 89 ab cd ef
+                hex fe dc ba 98
+                hex 76 54 32 10
+
 ; --- Main loop - mode 2 ------------------------------------------------------
 
 main_mode2      ; update 2nd line of hash via PPU buffer
@@ -544,7 +661,7 @@ upd_hash_line   ; update one line of hash via PPU buffer
 
 byte_to_ascii   ; convert one hash byte into 2 digits in PPU buffer
 
-                lda hash,x
+                lda state,x
                 lsr a
                 lsr a
                 lsr a
@@ -553,7 +670,7 @@ byte_to_ascii   ; convert one hash byte into 2 digits in PPU buffer
                 sta ppu_buffer,y
                 iny
 
-                lda hash,x
+                lda state,x
                 and #%00001111
                 jsr digit_to_ascii
                 sta ppu_buffer,y
