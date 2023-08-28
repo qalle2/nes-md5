@@ -1,6 +1,8 @@
 # nes-md5
 Compute an MD5 hash on the NES. The message can be 0&ndash;7 bytes long.
 
+![screenshot](snap.png)
+
 ## List of files
 
 ### Text
@@ -15,3 +17,4 @@ Compute an MD5 hash on the NES. The message can be 0&ndash;7 bytes long.
 * `chr.bin.gz`: CHR data in NES CHR format
 * `chr.png`: CHR data as an image
 * `md5.nes.gz`: assembled NES program
+* `snap.png`: screenshot
