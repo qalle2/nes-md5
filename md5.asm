@@ -11,18 +11,15 @@
 ;     2 = printing 2nd line of hash
 
 ; RAM
-msg_bytes       equ $00    ; message as bytes (64 bytes)
+msg_bytes       equ $00    ; message/chunk as bytes (64 bytes, 16 dwords)
 msg_digits      equ $40    ; message as hexadecimal digits (16 bytes)
 state           equ $50    ; MD5 state/hash (16 bytes, split in 4 dwords)
 state0          equ $50
 state1          equ $54
 state2          equ $58
 state3          equ $5c
-tdw0            equ $60    ; temporary dword (4 bytes)
-tdw1            equ $64    ; temporary dword (4 bytes)
-tdw2            equ $68    ; temporary dword (4 bytes)
-tdw3            equ $6c    ; temporary dword (4 bytes)
-ppu_buffer      equ $70    ; copied to PPU on next VBlank (24 bytes)
+ppu_buffer      equ $60    ; copied to PPU on next VBlank (24 bytes)
+tdw             equ $78    ; temporary dword (4 bytes)
 msg_len_digits  equ $f0    ; message length in digits (0-14)
 msg_len_bytes   equ $f1    ; message length in bytes (0-7)
 run_main_loop   equ $f2    ; is main loop allowed to run? (see above)
@@ -33,6 +30,7 @@ mode            equ $f6    ; program mode (see above)
 ppu_buf_adr_hi  equ $f7    ; PPU buffer - high byte of address
 ppu_buf_adr_lo  equ $f8    ; PPU buffer - low  byte of address
 ppu_buf_length  equ $f9    ; PPU buffer - length
+round           equ $fa    ; MD5 round (0-63)
 sprite_data     equ $0200  ; OAM page ($100 bytes)
 shl4_table      equ $0300  ; LUT ($100 bytes)
 shr4_table      equ $0400  ; LUT ($100 bytes)
@@ -491,50 +489,12 @@ prepare_msg     ; convert message from hexadecimal digits to bytes and pad it
 
                 rts
 
-; these macros are only used under hash_msg;
-; cycle counts assume zero page;
-;   2 cycles: LDA/ADC imm, ASL/LSR/ROL/ROR A, CLC
-;   3 cycles: LDA/STA/ADC zp, PHA
-;   4 cycles: PLA
-;   5 cycles: ASL/LSR/ROL/ROR zp
-;   6 cycles: JSR abs, RTS
-;
-macro copy _1, _2
-                ; copy _1 to _2 via A (6 cycles)
-                lda _1
-                sta _2
-endm
-macro addm _1, _2
-                ; add _2 to _1 via A (9 cycles)
-                lda _2
-                adc _1
-                sta _1
-endm
-macro push _1
-                ; push _1 via A (6 cycles)
-                lda _1
-                pha
-endm
-macro pull _1
-                ; pull _1 via A (7 cycles)
-                pla
-                sta _1
-endm
-macro swap _1, _2
-                ; swap _1 and _2 (19 cycles)
-                push _2
-                copy _1, _2
-                pull _1
-endm
-macro cidw _1, _2
-                ; copy immediate dword _2 to memory dword _1 via A (20 cycles)
-                copy #( _2        & $ff), _1+0
-                copy #((_2 >>  8) & $ff), _1+1
-                copy #((_2 >> 16) & $ff), _1+2
-                copy #((_2 >> 24) & $ff), _1+3
+macro ldxy _1, _2                       ; used in hash_msg
+                ldx _1
+                ldy _2
 endm
 
-hash_msg        ; set initial state
+hash_msg        ; set initial state of algorithm
                 ldx #0
 -               lda init_state,x
                 sta state,x
@@ -542,7 +502,39 @@ hash_msg        ; set initial state
                 cpx #16
                 bne -
 
-                ; TODO: hash the chunk
+                ; round 0 (see Python program)
+
+                lda #0
+                sta round
+
+                ldxy #tdw, #state2      ; t = state[2]
+                jsr mov_dword
+                ldxy #tdw, #state3      ; t ^= state[3]
+                jsr eor_dword
+                ldxy #tdw, #state1      ; t &= state[1]
+                jsr and_dword
+                ldxy #tdw, #state3      ; t ^= state[3]
+                jsr eor_dword
+
+                ldx #state0             ; t += state[0]
+                jsr add_dword
+                jsr add_sine            ; t += SINES[round]
+                jsr add_chunk           ; t += chunk[CHUNK_INDEXES[round]]
+                jsr rol_dword           ; t = ROL(t, SHIFTS[round])
+                ldx #state1             ; t += state[1]
+                jsr add_dword
+                ldxy #state0, #state3   ; state0 = state3
+                jsr mov_dword
+                ldxy #state3, #state2   ; state3 = state2
+                jsr mov_dword
+                ldxy #state2, #state1   ; state2 = state1
+                jsr mov_dword
+                ldxy #state1, #tdw      ; state1 = t
+                jsr mov_dword
+
+                ; md5("", rounds=1) = 7777 7777 fdd2 ed94 8788 8888 7431 eda8
+
+                ; TODO: do rounds 2-64
 
                 ; add initial state
                 ldx #0
@@ -568,60 +560,197 @@ hash_msg        ; set initial state
 
                 rts
 
-; cycle counts include JSR and RTS (+12 cycles)
+mov_dword       ; copy dword from $00,Y to $00,X (note the order of X and Y)
+                lda $00,y
+                sta $00,x
+                lda $01,y
+                sta $01,x
+                lda $02,y
+                sta $02,x
+                lda $03,y
+                sta $03,x
+                rts
 
-add_tdw1_tdw0   ; add tdw1 to tdw0 (50 cycles)
+add_dword       ; ADC tdw with dword at $00,X
                 clc
-                addm tdw0+0, tdw1+0
-                addm tdw0+1, tdw1+1
-                addm tdw0+2, tdw1+2
-                addm tdw0+3, tdw1+3
+                lda $00,x
+                adc tdw+0
+                sta tdw+0
+                lda $01,x
+                adc tdw+1
+                sta tdw+1
+                lda $02,x
+                adc tdw+2
+                sta tdw+2
+                lda $03,x
+                adc tdw+3
+                sta tdw+3
                 rts
 
-rol1_tdw0       ; ROL tdw0 (37 cycles)
-                lda tdw0+3
+and_dword       ; AND dword at $00,X with dword at $00,Y
+                lda $00,y
+                and $00,x
+                sta $00,x
+                lda $01,y
+                and $01,x
+                sta $01,x
+                lda $02,y
+                and $02,x
+                sta $02,x
+                lda $03,y
+                and $03,x
+                sta $03,x
+                rts
+
+eor_dword       ; EOR dword at $00,X with dword at $00,Y
+                lda $00,y
+                eor $00,x
+                sta $00,x
+                lda $01,y
+                eor $01,x
+                sta $01,x
+                lda $02,y
+                eor $02,x
+                sta $02,x
+                lda $03,y
+                eor $03,x
+                sta $03,x
+                rts
+
+add_sine        ; add sine constant at round*4 to tdw
+                ;
+                lda round
                 asl a
-                rol tdw0+0
-                rol tdw0+1
-                rol tdw0+2
-                rol tdw0+3
+                asl a
+                tax
+                ;
+                clc
+                lda sines+0,x
+                adc tdw+0
+                sta tdw+0
+                lda sines+1,x
+                adc tdw+1
+                sta tdw+1
+                lda sines+2,x
+                adc tdw+2
+                sta tdw+2
+                lda sines+3,x
+                adc tdw+3
+                sta tdw+3
                 rts
 
-ror1_tdw0       ; ROR tdw0 (37 cycles)
-                lda tdw0+0
+add_chunk       ; add a chunk specified by "round" to tdw
+                ;
+                ldx round
+                lda chunk_indexes,x     ; 0-15
+                asl a
+                asl a
+                tax                     ; offset to message/chunk
+                ;
+                clc
+                lda msg_bytes+0,x
+                adc tdw+0
+                sta tdw+0
+                lda msg_bytes+1,x
+                adc tdw+1
+                sta tdw+1
+                lda msg_bytes+2,x
+                adc tdw+2
+                sta tdw+2
+                lda msg_bytes+3,x
+                adc tdw+3
+                sta tdw+3
+                rts
+
+rol_dword       ; rotate tdw left specified by "round"; TODO: optimize
+                ldx round
+                lda shift_counts,x
+                tax
+-               jsr rol1_tdw
+                dex
+                bne -
+                rts
+
+rol1_tdw        ; ROL tdw
+                lda tdw+3
+                asl a
+                rol tdw+0
+                rol tdw+1
+                rol tdw+2
+                rol tdw+3
+                rts
+
+ror1_tdw        ; ROR tdw
+                lda tdw+0
                 lsr a
-                ror tdw0+3
-                ror tdw0+2
-                ror tdw0+1
-                ror tdw0+0
+                ror tdw+3
+                ror tdw+2
+                ror tdw+1
+                ror tdw+0
                 rts
 
-rol8_tdw0       ; ROL*8 tdw0 (43 cycles)
-                push tdw0+3
-                copy tdw0+2, tdw0+3
-                copy tdw0+1, tdw0+2
-                copy tdw0+0, tdw0+1
-                pull tdw0+0
+rol8_tdw        ; ROL*8 tdw
+                lda tdw+3
+                pha
+                lda tdw+2
+                sta tdw+3
+                lda tdw+1
+                sta tdw+2
+                lda tdw+0
+                sta tdw+1
+                pla
+                sta tdw+0
                 rts
 
-ror8_tdw0       ; ROR*8 tdw0 (43 cycles)
-                push tdw0+0
-                copy tdw0+1, tdw0+0
-                copy tdw0+2, tdw0+1
-                copy tdw0+3, tdw0+2
-                pull tdw0+3
-                rts
-
-rol16_tdw0      ; ROL*16 tdw0 (50 cycles)
-                swap tdw0+0, tdw0+2
-                swap tdw0+1, tdw0+3
+ror8_tdw        ; ROR*8 tdw
+                lda tdw+0
+                pha
+                lda tdw+1
+                sta tdw+0
+                lda tdw+2
+                sta tdw+1
+                lda tdw+3
+                sta tdw+2
+                pla
+                sta tdw+3
                 rts
 
 init_state      ; initial state of MD5 algorithm
-                hex 01 23 45 67
-                hex 89 ab cd ef
-                hex fe dc ba 98
-                hex 76 54 32 10
+                ; in little-endian order, i.e., 0x67452301 etc.
+                ;
+                hex 01234567 89abcdef fedcba98 76543210
+
+sines           ; math.floor(abs(math.sin(i)) * 0x100000000) for i in 1...64
+                ; in little-endian order, i.e., 0xd76aa478 etc.
+                ;
+                hex 78a46ad7 56b7c7e8 db702024 eecebdc1
+                hex af0f7cf5 2ac68747 134630a8 019546fd
+                hex d8988069 aff7448b b15bffff bed75c89
+                hex 2211906b 937198fd 8e4379a6 2108b449
+                hex 62251ef6 40b340c0 515a5e26 aac7b6e9
+                hex 5d102fd6 53144402 81e6a1d8 c8fbd3e7
+                hex e6cde121 d60737c3 870dd5f4 ed145a45
+                hex 05e9e3a9 f8a3effc d9026f67 8a4c2a8d
+                hex 4239faff 81f67187 22619d6d 0c38e5fd
+                hex 44eabea4 a9cfde4b 604bbbf6 70bcbfbe
+                hex c67e9b28 fa27a1ea 8530efd4 051d8804
+                hex 39d0d4d9 e599dbe6 f87ca21f 6556acc4
+                hex 442229f4 97ff2a43 a72394ab 39a093fc
+                hex c3595b65 92cc0c8f 7df4efff d15d8485
+                hex 4f7ea86f e0e62cfe 144301a3 a111084e
+                hex 827e53f7 35f23abd bbd2d72a 91d386eb
+
+chunk_indexes   ; chunk index for each round
+                db 0, 1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
+                db 1, 6, 11,  0,  5, 10, 15,  4,  9, 14,  3,  8, 13,  2,  7, 12
+                db 5, 8, 11, 14,  1,  4,  7, 10, 13,  0,  3,  6,  9, 12, 15,  2
+                db 0, 7, 14,  5, 12,  3, 10,  1,  8, 15,  6, 13,  4, 11,  2,  9
+
+shift_counts    ; shift count for each round
+                db 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22
+                db 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20
+                db 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23
+                db 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
 
 ; --- Main loop - mode 2 ------------------------------------------------------
 

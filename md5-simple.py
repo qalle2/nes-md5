@@ -1,5 +1,22 @@
-# a simplified MD5 implementation, based on https://github.com/qalle2/md5-algo
-# does not support messages longer than 7 bytes
+"""
+a simplified MD5 implementation, based on https://github.com/qalle2/md5-algo
+does not support messages longer than 7 bytes
+
+hash of an empty string if only n rounds are run:
+    n= 0: 02468ace 12579bdf fcb97531 eca86420
+    n= 1: 77777777 fdd2ed94 87888888 7431eda8
+    n= 2: ffffffff 663e63e5 7204db3d ffffffff
+    n= 3: 8ace1257 ac16bed7 db6f508e ea7b52b5
+    n= 4: 754a650c 8cdde30a 2148ab80 53e7c705
+    n= 8: 45564899 72e88e8b d9356c8e 0a29683f
+    n=16: f29fb15c f3474fc6 731c60f3 1d987b47
+    n=24: 6d6163a4 a3feefd3 3c41fc83 5908ea78
+    n=32: 3793b57a a80aee91 82a0ecb4 5168aabe
+    n=40: 2fbebfc6 9e37aab5 b529852a 8ca2f5bb
+    n=48: fe109ba6 46d94aba a02b9301 ca73d532
+    n=56: 15c46abd eaa5450e ceade5d1 a1488344
+    n=64: d41d8cd9 8f00b204 e9800998 ecf8427e
+"""
 
 import math, struct, sys
 
@@ -63,31 +80,44 @@ def hash_chunk(state, chunk):
     # chunk:  16 * 32 = 512 bits
     # return:  4 * 32 = 128 bits
 
-    (a, b, c, d) = state
+    state = list(state)
 
     for r in range(64):
         if r < 16:
-            t = d ^ (b & (c ^ d))
+            t = state[2]
+            t ^= state[3]
+            t &= state[1]
+            t ^= state[3]
         elif r < 32:
-            t = c ^ (d & (b ^ c))
+            t = state[1]
+            t ^= state[2]
+            t &= state[3]
+            t ^= state[2]
         elif r < 48:
-            t = b ^ c ^ d
+            t = state[1]
+            t ^= state[2]
+            t ^= state[3]
         else:
-            t = c ^ (b | ~d)
+            t = state[3]
+            t ^= 0xffffffff
+            t |= state[1]
+            t ^= state[2]
 
-        t = add(t, a)
+        t = add(t, state[0])
         t = add(t, SINES[r])
         t = add(t, chunk[CHUNK_INDEXES[r]])
 
         for i in range(SHIFTS[r]):
             t = rol(t)
 
-        a = d
-        d = c
-        c = b
-        b = (b + t) & 0xffffffff
+        t = add(t, state[1])
 
-    return (a, b, c, d)
+        state[0] = state[3]
+        state[3] = state[2]
+        state[2] = state[1]
+        state[1] = t
+
+    return tuple(state)
 
 def md5(message, debug=False):
     # hash a bytestring; return the hash as 16 bytes
@@ -152,9 +182,5 @@ assert md5(b"AB").hex()      == "b86fc6b051f63d73de262d4c34e3a0a9"
 assert md5(b"ximaz").hex()   == "61529519452809720693702583126814"
 assert md5(b"passwd").hex()  == "76a2173be6393254e72ffa4d6df1030a"
 assert md5(b"ABCDEFG").hex() == "bb747b3df3130fe1ca4afa93fb7d97c9"
-
-# if no chunks are hashed:
-# state: 0xce8a4602 0xdf9b5712 0x3175b9fc 0x2064a8ec
-# hexadecimal hash: 02468ace 12579bdf fcb97531 eca86420
 
 main()
