@@ -1,5 +1,5 @@
 # nes-md5
-Compute an MD5 hash on the NES. The UI is finished but the actual hashing only computes the first of 64 rounds.
+Compute an MD5 hash on the NES. The message can be 0&ndash;7 bytes long.
 
 ## List of files
 

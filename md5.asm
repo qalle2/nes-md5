@@ -1,10 +1,16 @@
 ; Qalle's MD5 Hasher (NES, ASM6)
 
+; Message / correct hash in hexadecimal:
+; (empty):              d41d 8cd9 8f00 b204 e980 0998 ecf8 427e
+; 00:                   93b8 85ad fe0d a089 cdf6 3490 4fd5 9f71
+; ff:                   0059 4fd4 f42b a43f c1ca 0427 a057 6295
+; 41 42:                b86f c6b0 51f6 3d73 de26 2d4c 34e3 a0a9
+; 41 42 43 44 45 46 47: bb74 7b3d f313 0fe1 ca4a fa93 fb7d 97c9
+
 ; --- Constants ---------------------------------------------------------------
 
 ; Notes:
 ; - "dword" = 32-bit little endian integer
-; - run_main_loop: $00-$7f = no, $80-$ff = yes
 ; - mode:
 ;     0 = editing
 ;     1 = computing and printing 1st line of hash
@@ -18,22 +24,20 @@ state0          equ $50
 state1          equ $54
 state2          equ $58
 state3          equ $5c
-ppu_buffer      equ $60    ; copied to PPU on next VBlank (24 bytes)
+ppu_buffer      equ $60    ; data to copy to PPU on next VBlank (24 bytes)
 tdw             equ $78    ; temporary dword (4 bytes)
-msg_len_digits  equ $f0    ; message length in digits (0-14)
-msg_len_bytes   equ $f1    ; message length in bytes (0-7)
-run_main_loop   equ $f2    ; is main loop allowed to run? (see above)
-pad_status      equ $f3    ; joypad status
-prev_pad_status equ $f4    ; previous joypad status
-cursor_pos      equ $f5    ; cursor position (0-13)
-mode            equ $f6    ; program mode (see above)
-ppu_buf_adr_hi  equ $f7    ; PPU buffer - high byte of address
-ppu_buf_adr_lo  equ $f8    ; PPU buffer - low  byte of address
-ppu_buf_length  equ $f9    ; PPU buffer - length
-round           equ $fa    ; MD5 round (0-63)
+msg_len_digits  equ $7c    ; message length in digits (0-14)
+msg_len_bytes   equ $7d    ; message length in bytes (0-7)
+run_main_loop   equ $7e    ; is main loop allowed to run? ($80-$ff = yes)
+pad_status      equ $7f    ; joypad status
+prev_pad_status equ $80    ; previous joypad status
+cursor_pos      equ $81    ; cursor position in hexadecimal digits (0-13)
+mode            equ $82    ; program mode (see above)
+ppu_buf_adr_hi  equ $83    ; PPU buffer - high byte of address
+ppu_buf_adr_lo  equ $84    ; PPU buffer - low  byte of address
+ppu_buf_length  equ $85    ; PPU buffer - length
+round           equ $86    ; MD5 round (0-63)
 sprite_data     equ $0200  ; OAM page ($100 bytes)
-shl4_table      equ $0300  ; LUT ($100 bytes)
-shr4_table      equ $0400  ; LUT ($100 bytes)
 
 ; memory-mapped registers
 ppu_ctrl        equ $2000
@@ -120,31 +124,13 @@ init_ram        ; initialize main RAM
                 bne -
 
                 ; set nonzero variables
-                lda #0
+                lda #(4*2)
                 sta msg_len_digits
-
-                ; create LUTs
-                ldx #0
--               txa
-                asl a
-                asl a
-                asl a
-                asl a
-                sta shl4_table,x
-                txa
-                lsr a
-                lsr a
-                lsr a
-                lsr a
-                sta shr4_table,x
-                inx
-                bne -
 
                 rts
 
 init_spr_data   ; initial sprite data (Y, tile, attributes, X)
-                ; #0: cursor
-                db 15*8-1, "^", %00000000, 2*8  ; cursor
+                db 15*8-1, "^", %00000000, 2*8  ; cursor (up arrow)
 
 init_ppu_mem    ; initialize PPU memory
 
@@ -182,11 +168,11 @@ init_ppu_mem    ; initialize PPU memory
                 ;
                 ldx #$ff
 --              inx
-                lda strings,x           ; addr high / end of all strings
+                lda strings,x           ; address high / end of all strings
                 bmi strs_end
                 sta ppu_addr
                 inx
-                lda strings,x           ; addr low
+                lda strings,x           ; address low
                 sta ppu_addr
                 ;
 -               inx
@@ -201,7 +187,7 @@ set_ppu_addr    sty ppu_addr            ; Y*$100+A -> address
                 sta ppu_addr
                 rts
 
-macro str_start _y, _x
+macro str_start _y, _x                  ; start string in NT0
                 dh $2000+_y*32+_x
                 dl $2000+_y*32+_x
 endm
@@ -247,25 +233,17 @@ main_loop       ; wait until NMI routine sets flag
                 jsr read_joypad
 
                 ; run sub for the mode we're in
-                lda mode
+                ldx mode
                 bne +
                 jsr main_mode0
                 jmp ++
-+               cmp #1
++               dex
                 bne +
                 jsr main_mode1
                 jmp ++
 +               jsr main_mode2
 
-++              ; update cursor sprite tile
-                ldx mode
-                lda mode2crsr_tile,x
-                sta sprite_data+0*4+1
-
-                ; update cursor sprite X
-                ldx cursor_pos
-                lda crsr_pos_to_x,x
-                sta sprite_data+0*4+3
+++              jsr update_cursor
 
                 ; clear flag (must be done after writing PPU buffer to ensure
                 ; it gets flushed before being written again)
@@ -290,7 +268,19 @@ read_joypad     ; read 1st joypad or Famicom expansion port controller
                 bcc -
                 rts
 
-mode2crsr_tile  ; mode to cursor sprite tile
+update_cursor   ; update cursor sprite
+
+                ldx mode                ; tile
+                lda mode2crsr_tile,x
+                sta sprite_data+0*4+1
+
+                ldx cursor_pos          ; X position
+                lda crsr_pos_to_x,x
+                sta sprite_data+0*4+3
+
+                rts
+
+mode2crsr_tile  ; program mode to cursor sprite tile
                 db "^@@"                ; up arrow, clock, clock
 
 crsr_pos_to_x   ; hexadecimal digit index to cursor sprite X
@@ -489,75 +479,130 @@ prepare_msg     ; convert message from hexadecimal digits to bytes and pad it
 
                 rts
 
-macro ldxy _1, _2                       ; used in hash_msg
-                ldx _1
-                ldy _2
-endm
+hash_msg        ; see Python program for more info
 
-hash_msg        ; set initial state of algorithm
+                ; set initial state of algorithm
                 ldx #0
--               lda init_state,x
+-               lda initial_state,x
                 sta state,x
                 inx
                 cpx #16
                 bne -
 
-                ; round 0 (see Python program)
-
+                ; run 64 rounds
                 lda #0
                 sta round
-
-                ldxy #tdw, #state2      ; t = state[2]
-                jsr mov_dword
-                ldxy #tdw, #state3      ; t ^= state[3]
-                jsr eor_dword
-                ldxy #tdw, #state1      ; t &= state[1]
-                jsr and_dword
-                ldxy #tdw, #state3      ; t ^= state[3]
-                jsr eor_dword
-
-                ldx #state0             ; t += state[0]
-                jsr add_dword
-                jsr add_sine            ; t += SINES[round]
-                jsr add_chunk           ; t += chunk[CHUNK_INDEXES[round]]
-                jsr rol_dword           ; t = ROL(t, SHIFTS[round])
-                ldx #state1             ; t += state[1]
-                jsr add_dword
-                ldxy #state0, #state3   ; state0 = state3
-                jsr mov_dword
-                ldxy #state3, #state2   ; state3 = state2
-                jsr mov_dword
-                ldxy #state2, #state1   ; state2 = state1
-                jsr mov_dword
-                ldxy #state1, #tdw      ; state1 = t
-                jsr mov_dword
-
-                ; md5("", rounds=1) = 7777 7777 fdd2 ed94 8788 8888 7431 eda8
-
-                ; TODO: do rounds 2-64
-
-                ; add initial state
-                ldx #0
--               clc
-                lda init_state,x
-                adc state,x
-                sta state,x
-                inx
-                lda init_state,x
-                adc state,x
-                sta state,x
-                inx
-                lda init_state,x
-                adc state,x
-                sta state,x
-                inx
-                lda init_state,x
-                adc state,x
-                sta state,x
-                inx
-                cpx #16
+-               jsr do_round
+                inc round
+                lda round
+                cmp #64
                 bne -
 
+                ; add initial state
+                ;
+                ldx #0
+--              clc
+                ldy #4
+-               lda initial_state,x
+                adc state,x
+                sta state,x
+                inx
+                dey
+                bne -
+                ;
+                cpx #16
+                bne --
+
+                rts
+
+do_round        ; do one of 64 MD5 rounds
+
+                ; bitops specific to rounds 0-15, 16-31, etc.
+                lda round
+                lsr a
+                lsr a
+                lsr a
+                lsr a
+                tax
+                bne +
+                jsr bitops0_15
+                jmp ++
++               dex
+                bne +
+                jsr bitops16_31
+                jmp ++
++               dex
+                bne +
+                jsr bitops32_47
+                jmp ++
++               jsr bitops48_63
+
+++              ; operations common to all rounds
+                ldx #state0             ; t += state[0]
+                jsr add_to_tdw
+                jsr add_sine            ; t += SINES[round]
+                jsr add_chunk           ; t += chunk[CHUNK_INDEXES[round]]
+                jsr rol_tdw             ; t = ROL(t, ROTATE_COUNT[round])
+                ldx #state1             ; t += state[1]
+                jsr add_to_tdw
+                ldx #state0             ; state0 = state3
+                ldy #state3
+                jsr mov_dword
+                ldx #state3             ; state3 = state2
+                ldy #state2
+                jsr mov_dword
+                ldx #state2             ; state2 = state1
+                ldy #state1
+                jsr mov_dword
+                ldx #state1             ; state1 = t
+                ldy #tdw
+                jsr mov_dword
+
+                rts
+
+bitops0_15      ; bitops for rounds 0-15
+                ldx #tdw                ; tdw = state2
+                ldy #state2
+                jsr mov_dword
+                ldx #state3             ; tdw ^= state3
+                jsr eor_tdw
+                ldx #state1             ; tdw &= state1
+                jsr and_tdw
+                ldx #state3             ; tdw ^= state3
+                jsr eor_tdw
+                rts
+
+bitops16_31     ; bitops for rounds 16-31
+                ldx #tdw                ; tdw = state1
+                ldy #state1
+                jsr mov_dword
+                ldx #state2             ; tdw ^= state2
+                jsr eor_tdw
+                ldx #state3             ; tdw &= state3
+                jsr and_tdw
+                ldx #state2             ; tdw ^= state2
+                jsr eor_tdw
+                rts
+
+bitops32_47     ; bitops for rounds 32-47
+                ldx #tdw                ; tdw = state1
+                ldy #state1
+                jsr mov_dword
+                ldx #state2             ; tdw ^= state2
+                jsr eor_tdw
+                ldx #state3             ; tdw ^= state3
+                jsr eor_tdw
+                rts
+
+bitops48_63     ; bitops for rounds 48-63
+                ldx #tdw                ; tdw = state3
+                ldy #state3
+                jsr mov_dword
+                jsr invert_tdw          ; tdw ^= 0xffffffff
+                ldx #state1             ; tdw |= state1
+                jsr ora_tdw
+                ldx #state2             ; tdw ^= state2
+                jsr eor_tdw
                 rts
 
 mov_dword       ; copy dword from $00,Y to $00,X (note the order of X and Y)
@@ -571,7 +616,7 @@ mov_dword       ; copy dword from $00,Y to $00,X (note the order of X and Y)
                 sta $03,x
                 rts
 
-add_dword       ; ADC tdw with dword at $00,X
+add_to_tdw      ; add dword at $00,X to tdw
                 clc
                 lda $00,x
                 adc tdw+0
@@ -587,37 +632,68 @@ add_dword       ; ADC tdw with dword at $00,X
                 sta tdw+3
                 rts
 
-and_dword       ; AND dword at $00,X with dword at $00,Y
-                lda $00,y
-                and $00,x
-                sta $00,x
-                lda $01,y
-                and $01,x
-                sta $01,x
-                lda $02,y
-                and $02,x
-                sta $02,x
-                lda $03,y
-                and $03,x
-                sta $03,x
+and_tdw         ; AND tdw with dword at $00,X
+                lda $00,x
+                and tdw+0
+                sta tdw+0
+                lda $01,x
+                and tdw+1
+                sta tdw+1
+                lda $02,x
+                and tdw+2
+                sta tdw+2
+                lda $03,x
+                and tdw+3
+                sta tdw+3
                 rts
 
-eor_dword       ; EOR dword at $00,X with dword at $00,Y
-                lda $00,y
-                eor $00,x
-                sta $00,x
-                lda $01,y
-                eor $01,x
-                sta $01,x
-                lda $02,y
-                eor $02,x
-                sta $02,x
-                lda $03,y
-                eor $03,x
-                sta $03,x
+eor_tdw         ; EOR tdw with dword at $00,X
+                lda $00,x
+                eor tdw+0
+                sta tdw+0
+                lda $01,x
+                eor tdw+1
+                sta tdw+1
+                lda $02,x
+                eor tdw+2
+                sta tdw+2
+                lda $03,x
+                eor tdw+3
+                sta tdw+3
                 rts
 
-add_sine        ; add sine constant at round*4 to tdw
+ora_tdw         ; ORA tdw with dword at $00,X
+                lda $00,x
+                ora tdw+0
+                sta tdw+0
+                lda $01,x
+                ora tdw+1
+                sta tdw+1
+                lda $02,x
+                ora tdw+2
+                sta tdw+2
+                lda $03,x
+                ora tdw+3
+                sta tdw+3
+                rts
+
+invert_tdw      ; invert tdw (EOR with #$ff)
+                ldx #$ff
+                txa
+                eor tdw+0
+                sta tdw+0
+                txa
+                eor tdw+1
+                sta tdw+1
+                txa
+                eor tdw+2
+                sta tdw+2
+                txa
+                eor tdw+3
+                sta tdw+3
+                rts
+
+add_sine        ; add sine constant specified by "round" to tdw
                 ;
                 lda round
                 asl a
@@ -662,67 +738,29 @@ add_chunk       ; add a chunk specified by "round" to tdw
                 sta tdw+3
                 rts
 
-rol_dword       ; rotate tdw left specified by "round"; TODO: optimize
+rol_tdw         ; rotate tdw left specified by "round" (slow)
+                ;
                 ldx round
-                lda shift_counts,x
+                lda rotate_counts,x
                 tax
--               jsr rol1_tdw
-                dex
-                bne -
-                rts
-
-rol1_tdw        ; ROL tdw
-                lda tdw+3
+                ;
+-               lda tdw+3
                 asl a
                 rol tdw+0
                 rol tdw+1
                 rol tdw+2
                 rol tdw+3
-                rts
-
-ror1_tdw        ; ROR tdw
-                lda tdw+0
-                lsr a
-                ror tdw+3
-                ror tdw+2
-                ror tdw+1
-                ror tdw+0
-                rts
-
-rol8_tdw        ; ROL*8 tdw
-                lda tdw+3
-                pha
-                lda tdw+2
-                sta tdw+3
-                lda tdw+1
-                sta tdw+2
-                lda tdw+0
-                sta tdw+1
-                pla
-                sta tdw+0
-                rts
-
-ror8_tdw        ; ROR*8 tdw
-                lda tdw+0
-                pha
-                lda tdw+1
-                sta tdw+0
-                lda tdw+2
-                sta tdw+1
-                lda tdw+3
-                sta tdw+2
-                pla
-                sta tdw+3
-                rts
-
-init_state      ; initial state of MD5 algorithm
-                ; in little-endian order, i.e., 0x67452301 etc.
                 ;
+                dex
+                bne -
+                rts
+
+initial_state   ; initial state of MD5 algorithm
+                ; in little-endian order, i.e., 0x67452301 etc.
                 hex 01234567 89abcdef fedcba98 76543210
 
 sines           ; math.floor(abs(math.sin(i)) * 0x100000000) for i in 1...64
                 ; in little-endian order, i.e., 0xd76aa478 etc.
-                ;
                 hex 78a46ad7 56b7c7e8 db702024 eecebdc1
                 hex af0f7cf5 2ac68747 134630a8 019546fd
                 hex d8988069 aff7448b b15bffff bed75c89
@@ -746,7 +784,7 @@ chunk_indexes   ; chunk index for each round
                 db 5, 8, 11, 14,  1,  4,  7, 10, 13,  0,  3,  6,  9, 12, 15,  2
                 db 0, 7, 14,  5, 12,  3, 10,  1,  8, 15,  6, 13,  4, 11,  2,  9
 
-shift_counts    ; shift count for each round
+rotate_counts   ; rotate count for each round
                 db 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22
                 db 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20
                 db 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23
@@ -766,7 +804,7 @@ main_mode2      ; update 2nd line of hash via PPU buffer
 
 ; --- Subs used in many places ------------------------------------------------
 
-upd_hash_line   ; update one line of hash via PPU buffer
+upd_hash_line   ; update one line of hash/state via PPU buffer
                 ; A = PPU address low, X = source index
 
                 ldy #$22
