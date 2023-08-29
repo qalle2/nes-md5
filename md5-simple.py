@@ -1,8 +1,8 @@
 """
 a simplified MD5 implementation, based on https://github.com/qalle2/md5-algo
-does not support messages longer than 7 bytes
+does not support messages longer than 31 bytes
 
-hash of an empty string if only n rounds are run:
+md5("") if only n rounds are run:
     n= 0: 02468ace 12579bdf fcb97531 eca86420
     n= 1: 77777777 fdd2ed94 87888888 7431eda8
     n= 2: ffffffff 663e63e5 7204db3d ffffffff
@@ -20,8 +20,10 @@ hash of an empty string if only n rounds are run:
 
 import math, struct, sys
 
+MAX_MSG_BYTES = 31
+
 # initial state of algorithm
-INIT_STATE = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476)
+INITIAL_STATE = (0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476)
 
 # math.floor(abs(math.sin(i)) * 0x100000000) for i in 1...64
 SINES = (
@@ -58,7 +60,7 @@ SHIFTS = (
 )
 
 def pad_message(message):
-    assert len(message) <= 7
+    # pad to 64 bytes (= 16 * 32 bits = 512 bits)
     return (
         message
         + b"\x80"
@@ -79,8 +81,6 @@ def hash_chunk(state, chunk):
     # state:   4 * 32 = 128 bits
     # chunk:  16 * 32 = 512 bits
     # return:  4 * 32 = 128 bits
-
-    state = list(state)
 
     for r in range(64):
         if r < 16:
@@ -117,43 +117,29 @@ def hash_chunk(state, chunk):
         state[2] = state[1]
         state[1] = t
 
-    return tuple(state)
+    return state
 
-def md5(message, debug=False):
+def md5(message):
     # hash a bytestring; return the hash as 16 bytes
 
-    assert len(message) <= 7
+    assert len(message) <= MAX_MSG_BYTES
 
-    if debug:
-        print("Message:", message.hex())
-
-    # pad to 512 bits (64 bytes)
+    # pad to 64 bytes (= 16 * 32 bits = 512 bits)
     message = pad_message(message)
-    if debug:
-        print("Padded message:", message.hex())
 
-    # only 1 chunk; treat as 16 * 32 bits
+    # only one chunk
     chunk = struct.unpack("<16I", message)
-    if debug:
-        print("Chunk:", " ".join(f"0x{i:08x}" for i in chunk))
 
-    # get 128-bit (4*32-bit, 16-byte) hash
-    state = hash_chunk(INIT_STATE, chunk)
-    if debug:
-        print(
-            "State after hashing chunk:       ",
-            " ".join(f"0x{i:08x}" for i in state)
-        )
+    # initialize state
+    state = list(INITIAL_STATE)
 
-    # add initial state
+    # get hash (16 bytes = 4 * 32 bits = 128 bits)
+    state = hash_chunk(state, chunk)
+
+    # add initial state to state
     state = [
-        (s + i) & 0xffff_ffff for (s, i) in zip(state, INIT_STATE)
+        (s + i) & 0xffffffff for (s, i) in zip(state, INITIAL_STATE)
     ]
-    if debug:
-        print(
-            "State after adding initial state:",
-            " ".join(f"0x{i:08x}" for i in state)
-        )
 
     # final state = hash
     return struct.pack("<4I", *state)
@@ -161,26 +147,33 @@ def md5(message, debug=False):
 def main():
     if len(sys.argv) != 2:
         sys.exit(
-            "Compute the MD5 hash of a bytestring (0-7 bytes). Argument: "
-            "bytestring in hexadecimal (\"\"=empty)."
+            f"Compute the MD5 hash of a bytestring (0-{MAX_MSG_BYTES} bytes). "
+            'Argument: bytestring in hexadecimal (""=empty).'
         )
 
     try:
         message = bytes.fromhex(sys.argv[1])
     except ValueError:
         sys.exit("The argument is not a valid hexadecimal bytestring.")
-    if len(message) > 7:
-        sys.exit("The bytestring must be 7 bytes or less.")
+    if len(message) > MAX_MSG_BYTES:
+        sys.exit(f"The bytestring must be {MAX_MSG_BYTES} bytes or less.")
 
-    print(md5(message, True).hex())
+    print(md5(message).hex())
 
-# verified with hashlib
-assert md5(b"").hex()        == "d41d8cd98f00b204e9800998ecf8427e"
-assert md5(b"\x00").hex()    == "93b885adfe0da089cdf634904fd59f71"
-assert md5(b"\xff").hex()    == "00594fd4f42ba43fc1ca0427a0576295"
-assert md5(b"AB").hex()      == "b86fc6b051f63d73de262d4c34e3a0a9"
-assert md5(b"ximaz").hex()   == "61529519452809720693702583126814"
-assert md5(b"passwd").hex()  == "76a2173be6393254e72ffa4d6df1030a"
-assert md5(b"ABCDEFG").hex() == "bb747b3df3130fe1ca4afa93fb7d97c9"
+# tests (verified with hashlib)
+assert md5(b"").hex()          == "d41d8cd98f00b204e9800998ecf8427e"
+assert md5( 1 * b"\x00").hex() == "93b885adfe0da089cdf634904fd59f71"
+assert md5( 1 * b"\xff").hex() == "00594fd4f42ba43fc1ca0427a0576295"
+assert md5( 4 * b"\x00").hex() == "f1d3ff8443297732862df21dc4e57262"
+assert md5( 8 * b"\x00").hex() == "7dea362b3fac8e00956a4952a3d4f474"
+assert md5(31 * b"\x00").hex() == "3861facee9efc127e340387f1936b8fb"
+assert md5(31 * b"\xff").hex() == "3498b0e2e50d0de1f6c63c5d7e4fac22"
+assert md5(b"A").hex()         == "7fc56270e7a70fa81a5935b72eacbe29"
+assert md5(b"AB").hex()        == "b86fc6b051f63d73de262d4c34e3a0a9"
+assert md5(b"ximaz").hex()     == "61529519452809720693702583126814"
+assert md5(b"passwd").hex()    == "76a2173be6393254e72ffa4d6df1030a"
+assert md5(b"ABCD").hex()      == "cb08ca4a7bb5f9683c19133a84872ca7"
+assert md5(b"ABCDEFG").hex()   == "bb747b3df3130fe1ca4afa93fb7d97c9"
+assert md5(b"ABCDEFGH").hex()  == "4783e784b4fa2fba9e4d6502dbc64f8f"
 
 main()
