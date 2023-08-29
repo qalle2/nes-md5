@@ -20,18 +20,20 @@ state2          equ $58
 state3          equ $5c
 ppu_buffer      equ $60    ; data to copy to PPU on next VBlank (24 bytes)
 tempdw          equ $78    ; temporary dword (4 bytes)
-msg_len_digits  equ $7c    ; message length in digits (0-14)
-msg_len_bytes   equ $7d    ; message length in bytes (0-7)
+msg_len_digits  equ $7c    ; message length in digits
+msg_len_bytes   equ $7d    ; message length in bytes
 run_main_loop   equ $7e    ; is main loop allowed to run? ($80-$ff = yes)
 pad_status      equ $7f    ; joypad status
 prev_pad_status equ $80    ; previous joypad status
-cursor_pos      equ $81    ; cursor position in hexadecimal digits (0-13)
+cursor_pos      equ $81    ; cursor position in hexadecimal digits
 mode            equ $82    ; program mode (see above)
 ppu_buf_adr_hi  equ $83    ; PPU buffer - high byte of address
 ppu_buf_adr_lo  equ $84    ; PPU buffer - low  byte of address
 ppu_buf_length  equ $85    ; PPU buffer - length
-round           equ $86    ; MD5 round (0-63)
+round           equ $86    ; MD5 round
+temp            equ $87    ; temporary byte
 sprite_data     equ $0200  ; OAM page ($100 bytes)
+chunk_indexes   equ $0300  ; chunk index table ($40 bytes)
 
 ; memory-mapped registers
 ppu_ctrl        equ $2000
@@ -78,10 +80,71 @@ endm
                 db %00000000, %00000000  ; NROM mapper, horiz. NT mirroring
                 pad $0010, $00           ; unused
 
-; --- Initialization ----------------------------------------------------------
+; --- Interrupt routines (here for page alignment) ----------------------------
 
                 base $c000              ; last 16 KiB of CPU address space
-                pad $e000, $ff          ; only use last 8 KiB
+                pad $f800, $ff          ; only use last 2 KiB
+
+nmi             pha                     ; push A, X, Y
+                txa
+                pha
+                tya
+                pha
+
+                bit ppu_status          ; reset ppu_scroll/ppu_addr latch
+
+                lda #$00                ; do sprite DMA
+                sta oam_addr
+                lda #>sprite_data
+                sta oam_dma
+
+                jsr flush_ppu_buf       ; flush PPU buffer
+
+                sec                     ; set flag to let main loop run once
+                ror run_main_loop
+
+                jsr set_ppu_regs        ; set PPU registers
+
+                pla                     ; pull Y, X, A
+                tay
+                pla
+                tax
+                pla
+
+irq             rti                     ; IRQ unused
+
+flush_ppu_buf   ; copy PPU buffer to PPU and empty it
+
+                ldy ppu_buf_length
+                beq +                   ; skip if empty
+
+                lda ppu_buf_adr_hi
+                sta ppu_addr
+                lda ppu_buf_adr_lo
+                sta ppu_addr
+
+                ldx #0
+-               lda ppu_buffer,x
+                sta ppu_data
+                inx
+                dey
+                bne -
+
+                lda #0                  ; reset length
+                sta ppu_buf_length
+
++               rts
+
+set_ppu_regs    lda #0                  ; set scroll
+                sta ppu_scroll
+                sta ppu_scroll
+                lda #%00011110          ; show background and sprites
+                sta ppu_mask
+                lda #%10000000          ; enable NMI (do this last)
+                sta ppu_ctrl
+                rts
+
+; --- Initialization ----------------------------------------------------------
 
 reset           ; initialize the NES
                 ; see https://wiki.nesdev.org/w/index.php/Init_code
@@ -104,7 +167,7 @@ reset           ; initialize the NES
                 jsr init_ppu_mem        ; initialize PPU memory
 
                 jsr wait_vbl_start      ; wait until next VBlank starts
-                jsr set_ppu_regs        ; set ppu_scroll/ppu_ctrl/ppu_mask
+                jsr set_ppu_regs        ; set PPU registers
                 jmp main_loop           ; start main program
 
 wait_vbl_start  bit ppu_status          ; wait until next VBlank starts
@@ -143,10 +206,48 @@ init_ram        ; initialize main RAM
                 lda #(4*2)
                 sta msg_len_digits
 
+                ; generate chunk index table (64 bytes, 4 * 16-byte subtable):
+                ;   0 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+                ;   1 6 11  0  5 10 15  4  9 14  3  8 13  2  7 12
+                ;   5 8 11 14  1  4  7 10 13  0  3  6  9 12 15  2
+                ;   0 7 14  5 12  3 10  1  8 15  6 13  4 11  2  9
+                ; how to generate:
+                ;   indexes 63-48: start from  9, sub 7, AND 0x0f, repeat
+                ;   indexes 47-32: start from  2, sub 3, AND 0x0f, repeat
+                ;   indexes 31-16: start from 12, sub 5, AND 0x0f, repeat
+                ;   indexes 15- 0: start from 15, sub 1, AND 0x0f, repeat
+                ;
+                ldy #0                  ; which subtable (0-3)
+                ;
+--              ldx ch_ind_ind,y        ; target index (predecremented)
+                lda ch_ind_last,y       ; value to write
+                pha
+                ;
+-               dex                     ; subtable loop
+                pla
+                sta chunk_indexes,x
+                sec
+                sbc ch_ind_sub,y
+                and #%00001111
+                pha
+                txa
+                and #%00001111
+                bne -
+                ;
+                pla
+                iny
+                cpy #4
+                bne --
+
                 rts
 
 init_spr_data   ; initial sprite data (Y, tile, attributes, X)
                 db 17*8-1, "^", %00000000, 4*8  ; cursor (up arrow)
+
+                ; for each 16-byte chunk index subtable
+ch_ind_ind      db 16, 32, 48, 64       ; last target index + 1
+ch_ind_last     db 15, 12,  2,  9       ; last value
+ch_ind_sub      db  1,  5,  3,  7       ; value to subtract for prev. value
 
 init_ppu_mem    ; initialize PPU memory
 
@@ -256,8 +357,8 @@ strings         ; for each: PPU address high/low, bytes, terminator (zero)
 main_loop       bit run_main_loop       ; wait until NMI routine sets flag
                 bpl main_loop
 
-                ldx mode                ; run sub for the mode we're in
-                jsr jump_engine         ; X = sub index
+                lda mode                ; run sub for the mode we're in
+                jsr jump_engine         ; A = sub index (0-2)
 
                 ldx mode                ; update cursor tile
                 lda mode2crsr_tile,x
@@ -355,17 +456,14 @@ dec_msg_len     lda msg_len_digits
                 ;
 +               rts
 
-inc_digit       ldx cursor_pos
-                lda msg_digits,x
-                clc
-                adc #1
+inc_digit       lda #1
                 jmp +
                 ;
-dec_digit       ldx cursor_pos
-                lda msg_digits,x
-                sec
-                sbc #1
-+               and #%00001111
+dec_digit       lda #$ff
++               ldx cursor_pos
+                clc
+                adc msg_digits,x
+                and #%00001111
                 sta msg_digits,x
                 rts
 
@@ -496,12 +594,11 @@ prepare_msg     ; convert message from hexadecimal digits to bytes and pad it
 hash_msg        ; see Python program for more info
 
                 ; set initial state of algorithm
-                ldx #0
+                ldx #(16-1)
 -               lda initial_state,x
                 sta state,x
-                inx
-                cpx #16
-                bne -
+                dex
+                bpl -
 
                 ; run 64 rounds
                 ;
@@ -515,8 +612,7 @@ hash_msg        ; see Python program for more info
                 lsr a
                 clc
                 adc #3
-                tax
-                jsr jump_engine         ; X = sub index (3-6)
+                jsr jump_engine         ; A = sub index (3-6)
                 ;
                 jsr ops_common          ; operations common to all rounds
                 ;
@@ -530,6 +626,7 @@ hash_msg        ; see Python program for more info
                 ldx #0
 --              clc
                 ldy #4
+                ;
 -               lda initial_state,x
                 adc state,x
                 sta state,x
@@ -596,69 +693,47 @@ bitops48_63     ; bitops for rounds 48-63
                 rts
 
 and_tempdw      ; AND tempdw with dword at $00,X
-                lda $00,x
-                and tempdw+0
-                sta tempdw+0
-                lda $01,x
-                and tempdw+1
-                sta tempdw+1
-                lda $02,x
-                and tempdw+2
-                sta tempdw+2
-                lda $03,x
-                and tempdw+3
-                sta tempdw+3
+                ldy #3
+-               lda $03,x
+                and tempdw,y
+                sta tempdw,y
+                dex
+                dey
+                bpl -
                 rts
 
 eor_tempdw      ; EOR tempdw with dword at $00,X
-                lda $00,x
-                eor tempdw+0
-                sta tempdw+0
-                lda $01,x
-                eor tempdw+1
-                sta tempdw+1
-                lda $02,x
-                eor tempdw+2
-                sta tempdw+2
-                lda $03,x
-                eor tempdw+3
-                sta tempdw+3
+                ldy #3
+-               lda $03,x
+                eor tempdw,y
+                sta tempdw,y
+                dex
+                dey
+                bpl -
                 rts
 
 ora_tempdw      ; ORA tempdw with dword at $00,X
-                lda $00,x
-                ora tempdw+0
-                sta tempdw+0
-                lda $01,x
-                ora tempdw+1
-                sta tempdw+1
-                lda $02,x
-                ora tempdw+2
-                sta tempdw+2
-                lda $03,x
-                ora tempdw+3
-                sta tempdw+3
+                ldy #3
+-               lda $03,x
+                ora tempdw,y
+                sta tempdw,y
+                dex
+                dey
+                bpl -
                 rts
 
 invert_tempdw   ; invert tempdw (EOR with 0xffffffff)
-                ldx #$ff
-                txa
-                eor tempdw+0
-                sta tempdw+0
-                txa
-                eor tempdw+1
-                sta tempdw+1
-                txa
-                eor tempdw+2
-                sta tempdw+2
-                txa
-                eor tempdw+3
-                sta tempdw+3
+                ldx #3
+-               lda #%11111111
+                eor tempdw,x
+                sta tempdw,x
+                dex
+                bpl -
                 rts
 
 ops_common      ; operations common to all rounds
 
-                ; add state[0], SINES[round] and chunk[CHUNK_INDEXES[round]]
+                ; add state[0], SINES[round] and chunk[chunk_indexes[round]]
                 ; to tempdw
                 ldx #state0
                 jsr add_to_tempdw
@@ -686,33 +761,46 @@ ops_common      ; operations common to all rounds
                 rts
 
 mov_dword       ; copy dword from $00,Y to $00,X (note the order of X and Y)
-                lda $00,y
+                ; (loop counter in stack; still shorter than unrolled loop)
+                ;
+                lda #4
+                pha
+                ;
+-               lda $00,y
                 sta $00,x
-                lda $01,y
-                sta $01,x
-                lda $02,y
-                sta $02,x
-                lda $03,y
-                sta $03,x
+                inx
+                iny
+                pla
+                sec
+                sbc #1
+                pha
+                bne -
+                ;
+                pla
                 rts
 
 add_to_tempdw   ; add dword at $00,X to tempdw
+                ; (PHP & PLP to store carry; still shorter than unrolled loop)
+                ;
                 clc
+                ldy #0
+                php
+                ;
+-               plp
                 lda $00,x
-                adc tempdw+0
-                sta tempdw+0
-                lda $01,x
-                adc tempdw+1
-                sta tempdw+1
-                lda $02,x
-                adc tempdw+2
-                sta tempdw+2
-                lda $03,x
-                adc tempdw+3
-                sta tempdw+3
+                adc tempdw,y
+                sta tempdw,y
+                php
+                inx
+                iny
+                cpy #4
+                bne -
+                ;
+                plp
                 rts
 
 add_sine        ; add sine constant specified by "round" to tempdw
+                ; (PHP & PLP to store carry; still shorter than unrolled loop)
                 ;
                 lda round
                 asl a
@@ -720,18 +808,20 @@ add_sine        ; add sine constant specified by "round" to tempdw
                 tax
                 ;
                 clc
-                lda sines+0,x
-                adc tempdw+0
-                sta tempdw+0
-                lda sines+1,x
-                adc tempdw+1
-                sta tempdw+1
-                lda sines+2,x
-                adc tempdw+2
-                sta tempdw+2
-                lda sines+3,x
-                adc tempdw+3
-                sta tempdw+3
+                ldy #0
+                php
+                ;
+-               plp
+                lda sines,x
+                adc tempdw,y
+                sta tempdw,y
+                php
+                inx
+                iny
+                cpy #4
+                bne -
+                ;
+                plp
                 rts
 
 sines           ; math.floor(abs(math.sin(i)) * 0x100000000) for i in 1...64
@@ -761,49 +851,40 @@ add_chunk       ; add chunk specified by "round" to tempdw
                 asl a
                 tax                     ; offset to message/chunk
                 ;
-                clc
-                lda msg_bytes+0,x
-                adc tempdw+0
-                sta tempdw+0
-                lda msg_bytes+1,x
-                adc tempdw+1
-                sta tempdw+1
-                lda msg_bytes+2,x
-                adc tempdw+2
-                sta tempdw+2
-                lda msg_bytes+3,x
-                adc tempdw+3
-                sta tempdw+3
+                jsr add_to_tempdw       ; add dword at $00,X to tempdw
                 rts
 
-chunk_indexes   ; chunk index for each round
-                db 0, 1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
-                db 1, 6, 11,  0,  5, 10, 15,  4,  9, 14,  3,  8, 13,  2,  7, 12
-                db 5, 8, 11, 14,  1,  4,  7, 10, 13,  0,  3,  6,  9, 12, 15,  2
-                db 0, 7, 14,  5, 12,  3, 10,  1,  8, 15,  6, 13,  4, 11,  2,  9
-
 rol_tempdw      ; rotate tempdw left, amount specified by "round" (slow)
-                ;
-                ldx round
+
+                ; index to rotate_counts: round=%aabbcc -> index=%aacc
+                lda round
+                and #%00000011
+                sta temp
+                lda round
+                lsr a
+                lsr a
+                and #%00001100
+                ora temp
+                tax
+
                 lda rotate_counts,x
                 tax
-                ;
+
 -               lda tempdw+3
                 asl a
                 rol tempdw+0
                 rol tempdw+1
                 rol tempdw+2
                 rol tempdw+3
-                ;
                 dex
                 bne -
+
                 rts
 
-rotate_counts   ; rotate count for each round
-                db 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22
-                db 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20
-                db 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23
-                db 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+rotate_counts   db 7, 12, 17, 22  ; rounds  0- 3, ..., 12-15
+                db 5,  9, 14, 20  ; rounds 16-19, ..., 28-31
+                db 4, 11, 16, 23  ; rounds 32-35, ..., 44-47
+                db 6, 10, 15, 21  ; rounds 48-51, ..., 60-63
 
 ; --- Main loop - mode 2 ------------------------------------------------------
 
@@ -819,25 +900,24 @@ main_mode2      ; update 2nd line of hash via PPU buffer
 
 ; --- Subs used in many places ------------------------------------------------
 
-jump_engine     ; jump to sub specified by index X;
+jump_engine     ; jump to sub specified by index A;
                 ; RTS in those subs will act like RTS in this sub;
                 ; see https://www.nesdev.org/wiki/Jump_table
                 ; and https://www.nesdev.org/wiki/RTS_Trick
 
                 ; push target address minus one, high byte first
-                lda jump_table_hi,x
+                asl a
+                tax
+                lda jump_table+1,x
                 pha
-                lda jump_table_lo,x
+                lda jump_table+0,x
                 pha
 
                 ; pull address, low byte first; jump to address plus one
                 rts
 
-                ; jump table - high/low bytes
-jump_table_hi   dh main_mode0-1, main_mode1-1,  main_mode2-1
-                dh bitops0_15-1, bitops16_31-1, bitops32_47-1, bitops48_63-1
-jump_table_lo   dl main_mode0-1, main_mode1-1,  main_mode2-1
-                dl bitops0_15-1, bitops16_31-1, bitops32_47-1, bitops48_63-1
+jump_table      dw main_mode0-1, main_mode1-1,  main_mode2-1
+                dw bitops0_15-1, bitops16_31-1, bitops32_47-1, bitops48_63-1
 
 upd_hash_line   ; update one line of hash (state) via PPU buffer
                 ; A = PPU address low, X = source index
@@ -891,69 +971,6 @@ digit_to_ascii  ; in: A = 0-15, out: A = ASCII for "0"-"9", "A"-"F";
                 adc #7                  ; "A" = 0x41
 +               rts
 
-; --- Interrupt routines ------------------------------------------------------
-
-                align $100, $ff         ; for speed
-
-nmi             pha                     ; push A, X, Y
-                txa
-                pha
-                tya
-                pha
-
-                bit ppu_status          ; reset ppu_scroll/ppu_addr latch
-
-                lda #$00                ; do sprite DMA
-                sta oam_addr
-                lda #>sprite_data
-                sta oam_dma
-
-                jsr flush_ppu_buf
-
-                sec                     ; set flag to let main loop run once
-                ror run_main_loop
-
-                jsr set_ppu_regs        ; set ppu_scroll/ppu_ctrl/ppu_mask
-
-                pla                     ; pull Y, X, A
-                tay
-                pla
-                tax
-                pla
-
-irq             rti                     ; IRQ unused
-
-flush_ppu_buf   ; flush PPU buffer
-
-                ldy ppu_buf_length
-                beq +                   ; skip if empty
-
-                lda ppu_buf_adr_hi
-                sta ppu_addr
-                lda ppu_buf_adr_lo
-                sta ppu_addr
-
-                ldx #0
--               lda ppu_buffer,x
-                sta ppu_data
-                inx
-                dey
-                bne -
-
-                lda #0                  ; reset length
-                sta ppu_buf_length
-
-+               rts
-
-set_ppu_regs    lda #0                  ; set scroll
-                sta ppu_scroll
-                sta ppu_scroll
-                lda #%00011110          ; show background and sprites
-                sta ppu_mask
-                lda #%10000000          ; enable NMI (do this last)
-                sta ppu_ctrl
-                rts
-
 ; --- Interrupt vectors -------------------------------------------------------
 
                 pad $fffa, $ff
@@ -962,6 +979,5 @@ set_ppu_regs    lda #0                  ; set scroll
 ; --- CHR ROM -----------------------------------------------------------------
 
                 base $0000
-                pad $0200
-                incbin "chr.bin"        ; ASCII 0x20-0x7f
+                incbin "chr.bin"        ; approximately ASCII 0x00-0x5f
                 pad $2000, $ff

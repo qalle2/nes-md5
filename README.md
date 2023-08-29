@@ -15,3 +15,9 @@ Compute an MD5 hash on the NES. The message can be 0&ndash;8 bytes long.
 * `chr.png`: CHR data as an image
 * `md5.nes.gz`: assembled NES program
 * `snap.png`: screenshot
+
+## Technical information
+* mapper: NROM
+* PRG ROM: 16 KiB (only uses the last 2 KiB)
+* CHR ROM: 8 KiB (only uses the first 2 KiB)
+* name table mirroring: does not matter
