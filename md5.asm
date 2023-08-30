@@ -648,11 +648,11 @@ bitops0_15      ; bitops for rounds 0-15
                 ldx #tempdw
                 ldy #state2
                 jsr mov_dword
-                ldx #state3
+                ldy #state3
                 jsr eor_tempdw
-                ldx #state1
+                ldy #state1
                 jsr and_tempdw
-                ldx #state3
+                ldy #state3
                 jsr eor_tempdw
                 rts
 
@@ -661,11 +661,11 @@ bitops16_31     ; bitops for rounds 16-31
                 ldx #tempdw
                 ldy #state1
                 jsr mov_dword
-                ldx #state2
+                ldy #state2
                 jsr eor_tempdw
-                ldx #state3
+                ldy #state3
                 jsr and_tempdw
-                ldx #state2
+                ldy #state2
                 jsr eor_tempdw
                 rts
 
@@ -674,9 +674,9 @@ bitops32_47     ; bitops for rounds 32-47
                 ldx #tempdw
                 ldy #state1
                 jsr mov_dword
-                ldx #state2
+                ldy #state2
                 jsr eor_tempdw
-                ldx #state3
+                ldy #state3
                 jsr eor_tempdw
                 rts
 
@@ -686,39 +686,39 @@ bitops48_63     ; bitops for rounds 48-63
                 ldy #state3
                 jsr mov_dword
                 jsr invert_tempdw
-                ldx #state1
+                ldy #state1
                 jsr ora_tempdw
-                ldx #state2
+                ldy #state2
                 jsr eor_tempdw
                 rts
 
-and_tempdw      ; AND tempdw with dword at $00,X
-                ldy #3
--               lda $03,x
-                and tempdw,y
-                sta tempdw,y
-                dex
+and_tempdw      ; AND tempdw with dword at $00,Y
+                ldx #3
+-               lda $03,y
+                and tempdw,x
+                sta tempdw,x
                 dey
+                dex
                 bpl -
                 rts
 
-eor_tempdw      ; EOR tempdw with dword at $00,X
-                ldy #3
--               lda $03,x
-                eor tempdw,y
-                sta tempdw,y
-                dex
+eor_tempdw      ; EOR tempdw with dword at $00,Y
+                ldx #3
+-               lda $03,y
+                eor tempdw,x
+                sta tempdw,x
                 dey
+                dex
                 bpl -
                 rts
 
-ora_tempdw      ; ORA tempdw with dword at $00,X
-                ldy #3
--               lda $03,x
-                ora tempdw,y
-                sta tempdw,y
-                dex
+ora_tempdw      ; ORA tempdw with dword at $00,Y
+                ldx #3
+-               lda $03,y
+                ora tempdw,x
+                sta tempdw,x
                 dey
+                dex
                 bpl -
                 rts
 
@@ -735,13 +735,13 @@ ops_common      ; operations common to all rounds
 
                 ; add state[0], SINES[round] and chunk[chunk_indexes[round]]
                 ; to tempdw
-                ldx #state0
+                ldy #state0
                 jsr add_to_tempdw
                 jsr add_sine
                 jsr add_chunk
 
                 jsr rol_tempdw          ; rotate tempdw left
-                ldx #state1             ; add state[1] to tempdw
+                ldy #state1             ; add state1 to tempdw
                 jsr add_to_tempdw
 
                 ; shuffle state and tempdw
@@ -779,49 +779,43 @@ mov_dword       ; copy dword from $00,Y to $00,X (note the order of X and Y)
                 pla
                 rts
 
-add_to_tempdw   ; add dword at $00,X to tempdw
-                ; (PHP & PLP to store carry; still shorter than unrolled loop)
+add_to_tempdw   ; add dword at $00,Y to tempdw
                 ;
                 clc
-                ldy #0
-                php
+                ldx #0                  ; target index
                 ;
--               plp
-                lda $00,x
-                adc tempdw,y
-                sta tempdw,y
-                php
-                inx
+-               lda $00,y
+                adc tempdw,x
+                sta tempdw,x
                 iny
-                cpy #4
-                bne -
+                inx
                 ;
-                plp
+                txa
+                and #%00000100
+                beq -
+                ;
                 rts
 
 add_sine        ; add sine constant specified by "round" to tempdw
-                ; (PHP & PLP to store carry; still shorter than unrolled loop)
                 ;
                 lda round
                 asl a
                 asl a
-                tax
+                tay                     ; source index
                 ;
                 clc
-                ldy #0
-                php
+                ldx #0                  ; target index
                 ;
--               plp
-                lda sines,x
-                adc tempdw,y
-                sta tempdw,y
-                php
-                inx
+-               lda sines,y
+                adc tempdw,x
+                sta tempdw,x
                 iny
-                cpy #4
-                bne -
+                inx
                 ;
-                plp
+                txa
+                and #%00000100
+                beq -
+                ;
                 rts
 
 sines           ; math.floor(abs(math.sin(i)) * 0x100000000) for i in 1...64
@@ -849,9 +843,9 @@ add_chunk       ; add chunk specified by "round" to tempdw
                 lda chunk_indexes,x     ; 0-15
                 asl a
                 asl a
-                tax                     ; offset to message/chunk
+                tay                     ; offset to message/chunk
                 ;
-                jsr add_to_tempdw       ; add dword at $00,X to tempdw
+                jsr add_to_tempdw       ; add dword at $00,Y to tempdw
                 rts
 
 rol_tempdw      ; rotate tempdw left, amount specified by "round" (slow)
