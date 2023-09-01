@@ -1,5 +1,5 @@
 # nes-md5
-Compute an MD5 hash on the NES. The message can be 0&ndash;8 bytes long.
+Compute an MD5 hash on the NES. The message can be 0&ndash;9 bytes long.
 
 ![screenshot](snap.png)
 
@@ -15,6 +15,14 @@ Compute an MD5 hash on the NES. The message can be 0&ndash;8 bytes long.
 * `chr.png`: CHR data as an image
 * `md5.nes.gz`: assembled NES program
 * `snap.png`: screenshot
+
+## How to use
+* d-pad left/right: move cursor left/right
+* d-pad down/up: decrease/increase digit at cursor by one
+* select button: increase digit at cursor by eight
+* B button: decrease length of message
+* A button: increase length of message
+* start button: compute the hash of the current message
 
 ## Technical information
 * mapper: NROM

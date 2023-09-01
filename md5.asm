@@ -1,5 +1,9 @@
 ; Qalle's MD5 Hasher (NES, ASM6)
 
+; For testing:
+; md5("")                         = d41d 8cd9 8f00 b204 e980 0998 ecf8 427e
+; md5(01 23 45 67 89 ab cd ef fe) = ad7e 4f41 8d7f 2364 5ab8 1d42 c082 53f0
+
 ; --- Constants ---------------------------------------------------------------
 
 ; Notes:
@@ -10,28 +14,28 @@
 ;     1 = computing and printing 1st line of hash
 ;     2 = printing 2nd line of hash
 
-; RAM
+; main RAM
 msg_bytes       equ $00    ; message/chunk as bytes (64 bytes, 16 dwords)
-msg_digits      equ $40    ; message as hexadecimal digits (16 bytes)
-state           equ $50    ; MD5 state/hash (16 bytes, split in 4 dwords)
-state0          equ $50
-state1          equ $54
-state2          equ $58
-state3          equ $5c
-ppu_buffer      equ $60    ; data to copy to PPU on next VBlank (24 bytes)
-tempdw          equ $78    ; temporary dword (4 bytes)
-msg_len_digits  equ $7c    ; message length in digits
-msg_len_bytes   equ $7d    ; message length in bytes
-run_main_loop   equ $7e    ; is main loop allowed to run? ($80-$ff = yes)
-pad_status      equ $7f    ; joypad status
-prev_pad_status equ $80    ; previous joypad status
-cursor_pos      equ $81    ; cursor position in hexadecimal digits
-mode            equ $82    ; program mode (see above)
-ppu_buf_adr_hi  equ $83    ; PPU buffer - high byte of address
-ppu_buf_adr_lo  equ $84    ; PPU buffer - low  byte of address
-ppu_buf_length  equ $85    ; PPU buffer - length
-round           equ $86    ; MD5 round
-temp            equ $87    ; temporary byte
+state           equ $40    ; MD5 state/hash (16 bytes, split in 4 dwords)
+state0          equ $40
+state1          equ $44
+state2          equ $48
+state3          equ $4c
+msg_digits      equ $50    ; message as hexadecimal digits (20 bytes)
+ppu_buffer      equ $64    ; data to copy to PPU on next VBlank (24 bytes)
+tempdw          equ $7c    ; temporary dword (4 bytes)
+msg_len_digits  equ $80    ; message length in digits
+msg_len_bytes   equ $81    ; message length in bytes
+run_main_loop   equ $82    ; is main loop allowed to run? ($80-$ff = yes)
+pad_status      equ $83    ; joypad status
+prev_pad_status equ $84    ; previous joypad status
+cursor_pos      equ $85    ; cursor position in hexadecimal digits
+mode            equ $86    ; program mode (see above)
+ppu_buf_adr_hi  equ $87    ; PPU buffer - high byte of address
+ppu_buf_adr_lo  equ $88    ; PPU buffer - low  byte of address
+ppu_buf_length  equ $89    ; PPU buffer - length
+round           equ $8a    ; MD5 round
+temp            equ $8b    ; temporary byte
 sprite_data     equ $0200  ; OAM page ($100 bytes)
 chunk_indexes   equ $0300  ; chunk index table ($40 bytes)
 
@@ -57,8 +61,9 @@ ppu_palette     equ $3f00
 ; colors
 COL_BG          equ $0f  ; background (black)
 COL_MAIN        equ $30  ; main text (white)
-COL_HELP        equ $27  ; help text (yellow)
-COL_INPUT       equ $21  ; cursor/message (blue)
+COL_HELP        equ $24  ; help text (pink)
+COL_INPUT       equ $27  ; cursor/message (yellow)
+COL_OUTPUT      equ $21  ; hash (blue)
 COL_UNUSED      equ $00  ; unused (gray)
 
 ; ASCII codes
@@ -68,7 +73,7 @@ ASCII_ZERO      equ $30
 ASCII_A         equ $41
 
 ; misc constants
-MAX_MSG_BYTES   equ 8    ; maximum length of message in bytes
+MAX_MSG_BYTES   equ 9    ; maximum length of message in bytes
 MD5_TERMINATOR  equ $80  ; first byte of padding
 
 ; --- Macros ------------------------------------------------------------------
@@ -249,7 +254,7 @@ init_ram        ; initialize main RAM
                 rts
 
 init_spr_data   ; initial sprite data (Y, tile, attributes, X)
-                db 17*8-1, "^", %00000000, 4*8  ; cursor (up arrow)
+                db 18*8-1, "^", %00000000, 4*8  ; cursor (up arrow)
 
                 ; for each 16-byte chunk index subtable
 ch_ind_ind      db 16, 32, 48, 64       ; last target index + 1
@@ -312,7 +317,7 @@ set_ppu_addr    sty ppu_addr            ; Y*$100+A -> address
 palette         db COL_BG, COL_MAIN,   COL_UNUSED, COL_UNUSED
                 db COL_BG, COL_HELP,   COL_UNUSED, COL_UNUSED
                 db COL_BG, COL_INPUT,  COL_UNUSED, COL_UNUSED
-                db COL_BG, COL_UNUSED, COL_UNUSED, COL_UNUSED
+                db COL_BG, COL_OUTPUT, COL_UNUSED, COL_UNUSED
                 db COL_BG, COL_INPUT
 palette_end
 
@@ -321,44 +326,56 @@ strings         ; for each: PPU address high/low, bytes, terminator (zero)
 
                 ; NT0
 
-                be_word ppu_nt0+4*32+6
+                be_word ppu_nt0+5*32+7
                 db "QALLE'S MD5 HASHER", 0
 
-                be_word ppu_nt0+7*32+4
-                db "  [ \\  MOVE CURSOR", 0
-                be_word ppu_nt0+8*32+4
-                db "  ] ^  ADJUST DIGIT", 0
-                be_word ppu_nt0+9*32+4
-                db "  B A  DECREASE/INCREASE", 0
-                be_word ppu_nt0+10*32+11
-                db "MESSAGE LENGTH", 0
-                be_word ppu_nt0+11*32+4
+                be_word ppu_nt0+8*32+7
+                db "[ \\  MOVE CURSOR", 0
+                be_word ppu_nt0+9*32+7
+                db "] ^  DIGIT -1/+1", 0
+                be_word ppu_nt0+10*32+4
+                db "SELECT  DIGIT +8", 0
+                be_word ppu_nt0+11*32+7
+                db "B A  LENGTH -1/+1", 0
+                be_word ppu_nt0+12*32+5
                 db "START  COMPUTE HASH", 0
 
-                be_word ppu_nt0+14*32+12
+                be_word ppu_nt0+15*32+12
                 db "MESSAGE:", 0
 
-                be_word ppu_nt0+19*32+13
+                be_word ppu_nt0+20*32+13
                 db "HASH:", 0
-                be_word ppu_nt0+21*32+6
+                be_word ppu_nt0+22*32+6
                 db "---- ---- ---- ----", 0
-                be_word ppu_nt0+23*32+6
+                be_word ppu_nt0+24*32+6
                 db "---- ---- ---- ----", 0
 
                 ; AT0
 
                 ; names of buttons in help text
-                be_word ppu_at0+1*8+1
-                db %01000000, %00010000, 0
                 be_word ppu_at0+2*8+1
-                db %01010100, %00010001, 0
+                db %01010101, %01010101, 0
+                be_word ppu_at0+3*8+1
+                db %01010101, %01010101, 0
 
                 ; message
-                be_word ppu_at0+4*8+1
-                db %00001010, %00001010, %00001010, %00001010, %00001010
-                db %00001010, 0
+                be_word ppu_at0+4*8+0
+                db %10101010, %10101010, %10101010, %10101010, %10101010
+                db %10101010, %10101010, %10101010, 0
+
+                ; hash
+                be_word ppu_at0+5*8+1
+                db %11110000, %11110000, %11110000, %11110000
+                db %11110000, %11110000, 0
+                be_word ppu_at0+6*8+1
+                db %00001111, %00001111, %00001111, %00001111
+                db %00001111, %00001111, 0
 
                 db 0                    ; end all strings
+
+if $ - strings > $100
+                error "out of string space"
+endif
 
 ; --- Main loop - common ------------------------------------------------------
 
@@ -386,14 +403,15 @@ mode2crsr_tile  ; program mode to cursor sprite tile
                 db "^@@"                ; up arrow, clock, clock
 
 crsr_pos_to_x   ; hexadecimal digit index to cursor sprite X
-                db  4*8,  5*8
-                db  7*8,  8*8
-                db 10*8, 11*8
-                db 13*8, 14*8
-                db 16*8, 17*8
-                db 19*8, 20*8
-                db 22*8, 23*8
-                db 25*8, 26*8
+                db  3*8,  4*8
+                db  6*8,  7*8
+                db  9*8, 10*8
+                db 12*8, 13*8
+                db 15*8, 16*8
+                db 18*8, 19*8
+                db 21*8, 22*8
+                db 24*8, 25*8
+                db 27*8, 28*8
 
 ; --- Main loop - mode 0 ------------------------------------------------------
 
@@ -430,6 +448,7 @@ button_handler  ; exit if something was pressed on last frame
                 asl a
                 bmi dec_msg_len         ; B
                 asl a
+                bmi inc_digit_by8       ; select
                 asl a
                 bmi start_hashing       ; start
                 asl a
@@ -464,6 +483,9 @@ dec_msg_len     lda msg_len_digits
                 ;
 +               rts
 
+inc_digit_by8   lda #8
+                jmp +
+                ;
 inc_digit       lda #1
                 jmp +
                 ;
@@ -500,9 +522,9 @@ start_hashing   inc mode                ; to mode 1
 
 update_msg      ; update message via PPU buffer
 
-                lda #>(ppu_nt0+16*32+4)
+                lda #>(ppu_nt0+17*32+3)
                 sta ppu_buf_adr_hi
-                lda #<(ppu_nt0+16*32+4)
+                lda #<(ppu_nt0+17*32+3)
                 sta ppu_buf_adr_lo
 
                 ; write "-- -- "... to buffer
@@ -549,8 +571,8 @@ main_mode1      jsr prepare_msg         ; convert to bytes and pad
                 jsr hash_msg
 
                 ; update 1st line of hash via PPU buffer
-                ldy #>(ppu_nt0+21*32+6)  ; PPU address high
-                lda #<(ppu_nt0+21*32+6)  ; PPU address low
+                ldy #>(ppu_nt0+22*32+6)  ; PPU address high
+                lda #<(ppu_nt0+22*32+6)  ; PPU address low
                 ldx #0                  ; source index
                 jsr upd_hash_line
 
@@ -891,8 +913,8 @@ rotate_counts   db 7, 12, 17, 22  ; rounds  0- 3, ..., 12-15
 ; --- Main loop - mode 2 ------------------------------------------------------
 
 main_mode2      ; update 2nd line of hash via PPU buffer
-                ldy #>(ppu_nt0+23*32+6)  ; PPU address high
-                lda #<(ppu_nt0+23*32+6)  ; PPU address low
+                ldy #>(ppu_nt0+24*32+6)  ; PPU address high
+                lda #<(ppu_nt0+24*32+6)  ; PPU address low
                 ldx #8                  ; source index
                 jsr upd_hash_line
 
