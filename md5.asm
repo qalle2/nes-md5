@@ -277,7 +277,7 @@ init_ppu_mem    ; initialize PPU memory
                 lda #<ppu_nt0
                 jsr set_ppu_addr        ; Y*$100+A -> address
                 ;
-                ; TODO: add LDA #$00 here for clarity
+                lda #$00
                 ldy #4
                 tax
 -               sta ppu_data
@@ -286,12 +286,12 @@ init_ppu_mem    ; initialize PPU memory
                 dey
                 bne -
 
-                ; print NT/AT strings (TODO: use 0 as both terminators)
+                ; print NT/AT strings
                 ;
                 ldx #$ff
 --              inx
                 lda strings,x           ; address high / end of all strings
-                bmi strs_end
+                beq +
                 sta ppu_addr
                 inx
                 lda strings,x           ; address low
@@ -303,7 +303,7 @@ init_ppu_mem    ; initialize PPU memory
                 sta ppu_data
                 jmp -
 
-strs_end        rts
++               rts
 
 set_ppu_addr    sty ppu_addr            ; Y*$100+A -> address
                 sta ppu_addr
@@ -358,7 +358,7 @@ strings         ; for each: PPU address high/low, bytes, terminator (zero)
                 db %00001010, %00001010, %00001010, %00001010, %00001010
                 db %00001010, 0
 
-                db $80                  ; end all strings
+                db 0                    ; end all strings
 
 ; --- Main loop - common ------------------------------------------------------
 
@@ -549,6 +549,7 @@ main_mode1      jsr prepare_msg         ; convert to bytes and pad
                 jsr hash_msg
 
                 ; update 1st line of hash via PPU buffer
+                ldy #>(ppu_nt0+21*32+6)  ; PPU address high
                 lda #<(ppu_nt0+21*32+6)  ; PPU address low
                 ldx #0                  ; source index
                 jsr upd_hash_line
@@ -688,7 +689,7 @@ bitops32_47     ; bitops for rounds 32-47
                 rts
 
 bitops48_63     ; bitops for rounds 48-63
-                ; tempdw = ((state3 ^ 0xffffffff) | state1) ^ state2
+                ; tempdw = ((~state3) | state1) ^ state2
                 ldx #tempdw
                 ldy #state3
                 jsr mov_dword
@@ -740,7 +741,7 @@ invert_tempdw   ; invert tempdw (EOR with 0xffffffff)
 
 ops_common      ; operations common to all rounds
 
-                ; add state[0], SINES[round] and chunk[chunk_indexes[round]]
+                ; add state0, sines[round] and chunk[chunk_indexes[round]]
                 ; to tempdw
                 ldy #state0
                 jsr add_to_tempdw
@@ -890,6 +891,7 @@ rotate_counts   db 7, 12, 17, 22  ; rounds  0- 3, ..., 12-15
 ; --- Main loop - mode 2 ------------------------------------------------------
 
 main_mode2      ; update 2nd line of hash via PPU buffer
+                ldy #>(ppu_nt0+23*32+6)  ; PPU address high
                 lda #<(ppu_nt0+23*32+6)  ; PPU address low
                 ldx #8                  ; source index
                 jsr upd_hash_line
@@ -921,10 +923,8 @@ jump_table      dw main_mode0-1, main_mode1-1,  main_mode2-1
                 dw bitops0_15-1, bitops16_31-1, bitops32_47-1, bitops48_63-1
 
 upd_hash_line   ; update one line of hash (state) via PPU buffer
-                ; A = PPU address low, X = source index
-                ; TODO: get address high from args too for flexibility
+                ; Y/A = PPU address high/low, X = source index (0/8)
 
-                ldy #>(ppu_nt0+21*32)
                 sty ppu_buf_adr_hi
                 sta ppu_buf_adr_lo
 
@@ -966,11 +966,12 @@ byte_to_ascii   ; convert one hash byte into 2 digits in PPU buffer
 digit_to_ascii  ; in: A = 0-15, out: A = ASCII for "0"-"9", "A"-"F";
                 ; must not alter X, Y
                 ;
-                ora #ASCII_ZERO         ; TODO: use CLC&ADC for clarity
+                clc
+                adc #ASCII_ZERO
                 cmp #(ASCII_ZERO+10)
                 bcc +
                 clc
-                adc #(ASCII_A-(ASCII_ZERO+10))  ; skip chars between digits & A
+                adc #(ASCII_A-(ASCII_ZERO+10))  ; "A"-"F"
 +               rts
 
 ; --- Interrupt vectors -------------------------------------------------------
