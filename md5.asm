@@ -49,26 +49,33 @@ snd_chn         equ $4015
 joypad1         equ $4016
 joypad2         equ $4017
 
-; colors
-col_bg          equ $0f  ; background (black)
-col_main        equ $30  ; main text (white)
-col_help        equ $27  ; help text (yellow)
-col_input       equ $21  ; cursor/message (blue)
-col_unused      equ $00  ; unused (gray)
+; PPU memory space
+ppu_nt0         equ $2000
+ppu_at0         equ $23c0
+ppu_palette     equ $3f00
 
+; colors
+COL_BG          equ $0f  ; background (black)
+COL_MAIN        equ $30  ; main text (white)
+COL_HELP        equ $27  ; help text (yellow)
+COL_INPUT       equ $21  ; cursor/message (blue)
+COL_UNUSED      equ $00  ; unused (gray)
+
+; ASCII codes
+ASCII_SPACE     equ $20
+ASCII_HYPHEN    equ $2d
+ASCII_ZERO      equ $30
+ASCII_A         equ $41
+
+; misc constants
 MAX_MSG_BYTES   equ 8    ; maximum length of message in bytes
+MD5_TERMINATOR  equ $80  ; first byte of padding
 
 ; --- Macros ------------------------------------------------------------------
 
-macro nt0_address _y, _x
-                ; PPU address in NT0, high byte first
-                dh $2000+_y*32+_x
-                dl $2000+_y*32+_x
-endm
-macro at0_address _y, _x
-                ; PPU address in AT0, high byte first
-                dh $23c0+_y*8+_x
-                dl $23c0+_y*8+_x
+macro be_word _word
+                ; big-endian word (high byte first)
+                db >(_word), <(_word)
 endm
 
 ; --- iNES header -------------------------------------------------------------
@@ -212,22 +219,22 @@ init_ram        ; initialize main RAM
                 ;   5 8 11 14  1  4  7 10 13  0  3  6  9 12 15  2
                 ;   0 7 14  5 12  3 10  1  8 15  6 13  4 11  2  9
                 ; how to generate:
-                ;   indexes 63-48: start from  9, sub 7, AND 0x0f, repeat
-                ;   indexes 47-32: start from  2, sub 3, AND 0x0f, repeat
-                ;   indexes 31-16: start from 12, sub 5, AND 0x0f, repeat
                 ;   indexes 15- 0: start from 15, sub 1, AND 0x0f, repeat
+                ;   indexes 31-16: start from 12, sub 5, AND 0x0f, repeat
+                ;   indexes 47-32: start from  2, sub 3, AND 0x0f, repeat
+                ;   indexes 63-48: start from  9, sub 7, AND 0x0f, repeat
                 ;
                 ldy #0                  ; which subtable (0-3)
                 ;
 --              ldx ch_ind_ind,y        ; target index (predecremented)
-                lda ch_ind_last,y       ; value to write
+                lda ch_ind_last_val,y   ; value to write
                 pha
                 ;
 -               dex                     ; subtable loop
                 pla
                 sta chunk_indexes,x
                 sec
-                sbc ch_ind_sub,y
+                sbc ch_ind_sub_val,y
                 and #%00001111
                 pha
                 txa
@@ -246,15 +253,15 @@ init_spr_data   ; initial sprite data (Y, tile, attributes, X)
 
                 ; for each 16-byte chunk index subtable
 ch_ind_ind      db 16, 32, 48, 64       ; last target index + 1
-ch_ind_last     db 15, 12,  2,  9       ; last value
-ch_ind_sub      db  1,  5,  3,  7       ; value to subtract for prev. value
+ch_ind_last_val db 15, 12,  2,  9       ; last value
+ch_ind_sub_val  db  1,  5,  3,  7       ; value to subtract for prev. value
 
 init_ppu_mem    ; initialize PPU memory
 
                 ; set palette (while still in VBlank)
                 ;
-                ldy #$3f
-                lda #$00
+                ldy #>ppu_palette
+                lda #<ppu_palette
                 jsr set_ppu_addr        ; Y*$100+A -> address
                 ;
                 ldx #0
@@ -266,10 +273,11 @@ init_ppu_mem    ; initialize PPU memory
 
                 ; clear NT0 & AT0 ($400 bytes)
                 ;
-                ldy #$20
-                lda #$00
+                ldy #>ppu_nt0
+                lda #<ppu_nt0
                 jsr set_ppu_addr        ; Y*$100+A -> address
                 ;
+                ; TODO: add LDA #$00 here for clarity
                 ldy #4
                 tax
 -               sta ppu_data
@@ -278,7 +286,7 @@ init_ppu_mem    ; initialize PPU memory
                 dey
                 bne -
 
-                ; print NT/AT strings
+                ; print NT/AT strings (TODO: use 0 as both terminators)
                 ;
                 ldx #$ff
 --              inx
@@ -301,11 +309,11 @@ set_ppu_addr    sty ppu_addr            ; Y*$100+A -> address
                 sta ppu_addr
                 rts
 
-palette         db col_bg, col_main,   col_unused, col_unused
-                db col_bg, col_help,   col_unused, col_unused
-                db col_bg, col_input,  col_unused, col_unused
-                db col_bg, col_unused, col_unused, col_unused
-                db col_bg, col_input
+palette         db COL_BG, COL_MAIN,   COL_UNUSED, COL_UNUSED
+                db COL_BG, COL_HELP,   COL_UNUSED, COL_UNUSED
+                db COL_BG, COL_INPUT,  COL_UNUSED, COL_UNUSED
+                db COL_BG, COL_UNUSED, COL_UNUSED, COL_UNUSED
+                db COL_BG, COL_INPUT
 palette_end
 
 strings         ; for each: PPU address high/low, bytes, terminator (zero)
@@ -313,40 +321,40 @@ strings         ; for each: PPU address high/low, bytes, terminator (zero)
 
                 ; NT0
 
-                nt0_address 4, 6
+                be_word ppu_nt0+4*32+6
                 db "QALLE'S MD5 HASHER", 0
 
-                nt0_address 7, 4
+                be_word ppu_nt0+7*32+4
                 db "  [ \\  MOVE CURSOR", 0
-                nt0_address 8, 4
+                be_word ppu_nt0+8*32+4
                 db "  ] ^  ADJUST DIGIT", 0
-                nt0_address 9, 4
+                be_word ppu_nt0+9*32+4
                 db "  B A  DECREASE/INCREASE", 0
-                nt0_address 10, 11
+                be_word ppu_nt0+10*32+11
                 db "MESSAGE LENGTH", 0
-                nt0_address 11, 4
+                be_word ppu_nt0+11*32+4
                 db "START  COMPUTE HASH", 0
 
-                nt0_address 14, 12
+                be_word ppu_nt0+14*32+12
                 db "MESSAGE:", 0
 
-                nt0_address 19, 13
+                be_word ppu_nt0+19*32+13
                 db "HASH:", 0
-                nt0_address 21, 6
+                be_word ppu_nt0+21*32+6
                 db "---- ---- ---- ----", 0
-                nt0_address 23, 6
+                be_word ppu_nt0+23*32+6
                 db "---- ---- ---- ----", 0
 
                 ; AT0
 
                 ; names of buttons in help text
-                at0_address 1, 1
+                be_word ppu_at0+1*8+1
                 db %01000000, %00010000, 0
-                at0_address 2, 1
+                be_word ppu_at0+2*8+1
                 db %01010100, %00010001, 0
 
                 ; message
-                at0_address 4, 1
+                be_word ppu_at0+4*8+1
                 db %00001010, %00001010, %00001010, %00001010, %00001010
                 db %00001010, 0
 
@@ -492,14 +500,14 @@ start_hashing   inc mode                ; to mode 1
 
 update_msg      ; update message via PPU buffer
 
-                lda #$22
+                lda #>(ppu_nt0+16*32+4)
                 sta ppu_buf_adr_hi
-                lda #$04
+                lda #<(ppu_nt0+16*32+4)
                 sta ppu_buf_adr_lo
 
                 ; write "-- -- "... to buffer
-                lda #$2d                ; "-"
-                ldy #$20                ; " "
+                lda #ASCII_HYPHEN
+                ldy #ASCII_SPACE
                 ldx #0                  ; target index
 -               sta ppu_buffer,x
                 inx
@@ -541,7 +549,7 @@ main_mode1      jsr prepare_msg         ; convert to bytes and pad
                 jsr hash_msg
 
                 ; update 1st line of hash via PPU buffer
-                lda #$a6                ; PPU address low
+                lda #<(ppu_nt0+21*32+6)  ; PPU address low
                 ldx #0                  ; source index
                 jsr upd_hash_line
 
@@ -578,8 +586,7 @@ prepare_msg     ; convert message from hexadecimal digits to bytes and pad it
                 cpy msg_len_bytes
                 bne -
 
-+               ; append byte 0x80
-                lda #$80
++               lda #MD5_TERMINATOR     ; append terminator
                 ldx msg_len_bytes
                 sta msg_bytes,x
 
@@ -883,7 +890,7 @@ rotate_counts   db 7, 12, 17, 22  ; rounds  0- 3, ..., 12-15
 ; --- Main loop - mode 2 ------------------------------------------------------
 
 main_mode2      ; update 2nd line of hash via PPU buffer
-                lda #$e6                ; PPU address low
+                lda #<(ppu_nt0+23*32+6)  ; PPU address low
                 ldx #8                  ; source index
                 jsr upd_hash_line
 
@@ -915,8 +922,9 @@ jump_table      dw main_mode0-1, main_mode1-1,  main_mode2-1
 
 upd_hash_line   ; update one line of hash (state) via PPU buffer
                 ; A = PPU address low, X = source index
+                ; TODO: get address high from args too for flexibility
 
-                ldy #$22
+                ldy #>(ppu_nt0+21*32)
                 sty ppu_buf_adr_hi
                 sta ppu_buf_adr_lo
 
@@ -924,7 +932,7 @@ upd_hash_line   ; update one line of hash (state) via PPU buffer
 
 -               jsr byte_to_ascii
                 jsr byte_to_ascii
-                lda #$20                ; " "
+                lda #ASCII_SPACE
                 sta ppu_buffer,y
                 iny
                 cpy #(4*5)
@@ -958,11 +966,11 @@ byte_to_ascii   ; convert one hash byte into 2 digits in PPU buffer
 digit_to_ascii  ; in: A = 0-15, out: A = ASCII for "0"-"9", "A"-"F";
                 ; must not alter X, Y
                 ;
-                ora #$30                ; add 0x30 (ASCII "0")
-                cmp #$3a
+                ora #ASCII_ZERO         ; TODO: use CLC&ADC for clarity
+                cmp #(ASCII_ZERO+10)
                 bcc +
                 clc
-                adc #7                  ; "A" = 0x41
+                adc #(ASCII_A-(ASCII_ZERO+10))  ; skip chars between digits & A
 +               rts
 
 ; --- Interrupt vectors -------------------------------------------------------
