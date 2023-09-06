@@ -996,6 +996,9 @@ digit_to_ascii  ; in: A = 0-15, out: A = ASCII for "0"-"9", "A"-"F";
                 adc #(ASCII_A-(ASCII_ZERO+10))  ; "A"-"F"
 +               rts
 
+                ; NESDev Compo requires $ffd0-$fff9 to be unused
+                pad $ffd0, $ff
+
 ; --- Interrupt vectors -------------------------------------------------------
 
                 pad $fffa, $ff
