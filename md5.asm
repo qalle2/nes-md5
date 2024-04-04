@@ -275,6 +275,12 @@ init_ppu_mem    ; initialize PPU memory
                 inx
                 cpx #(palette_end-palette)
                 bne -
+                ;
+                ; prevent palette corruption; see
+                ; https://www.nesdev.org/wiki/PPU_registers#Palette_corruption
+                ldy #>ppu_palette
+                lda #<ppu_palette
+                jsr set_ppu_addr        ; Y*$100+A -> address
 
                 ; clear NT0 & AT0 ($400 bytes)
                 ;
